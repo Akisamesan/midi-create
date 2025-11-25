@@ -43,6 +43,8 @@
 .transport {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .transport-btn {
@@ -117,17 +119,29 @@
 }
 
 .note-cell {
-  height: 34px;
+  height: 44px;
   border-radius: 9px;
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.03);
   color: #f1efff;
-  font-size: 0.95rem;
-  font-weight: 600;
   display: flex;
+  flex-direction: column;
+  gap: 2px;
   align-items: center;
   justify-content: center;
   transition: transform 0.2s, border 0.2s, background 0.2s;
+}
+
+.note-degree {
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.note-chord {
+  font-size: 0.7rem;
+  line-height: 1;
+  opacity: 0.9;
 }
 
 .note-cell.selected {
@@ -302,6 +316,11 @@
 .degree-symbol {
   font-size: 1.15rem;
   font-weight: 700;
+}
+
+.chord-name {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.8);
 }
 
 .degree-emotion {

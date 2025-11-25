@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CircleHelp, Play, Square, X } from 'lucide-react'
+import { CircleHelp, Download, Play, Square, X } from 'lucide-react'
+import Midi from 'jsmidgen'
 import {
   DEGREE_EMOTIONS,
   DEGREE_LIST,
@@ -10,11 +11,23 @@ import {
   type MovementKey,
 } from '../data/degreeEmotions'
 
+const DIATONIC_CHORDS: Record<DegreeKey, { pitches: number[]; symbol: string; notes: string }> = {
+  'Ⅰ': { pitches: [60, 64, 67], symbol: 'C', notes: 'C E G' },
+  'Ⅱ': { pitches: [62, 65, 69], symbol: 'Dm', notes: 'D F A' },
+  'Ⅲ': { pitches: [64, 67, 71], symbol: 'Em', notes: 'E G B' },
+  'Ⅳ': { pitches: [65, 69, 72], symbol: 'F', notes: 'F A C' },
+  'Ⅴ': { pitches: [67, 71, 74], symbol: 'G', notes: 'G B D' },
+  'Ⅵ': { pitches: [69, 72, 76], symbol: 'Am', notes: 'A C E' },
+  'Ⅶ': { pitches: [71, 74, 77], symbol: 'Bdim', notes: 'B D F' },
+}
+
 const TOTAL_BARS = 8
 const NOTES_PER_BAR = 8
 const BARS_PER_PAGE = 4
 const BPM = 120
 const EIGHTH_DURATION = (60 / BPM) / 2
+const MIDI_TICKS_PER_BEAT = 480
+const EIGHTH_NOTE_TICKS = MIDI_TICKS_PER_BEAT / 2
 
 interface SequenceCell {
   degree: DegreeKey
@@ -61,18 +74,8 @@ const deriveMovement = (previous: DegreeKey | null, next: DegreeKey): MovementKe
   return direction === 'up' ? 'leap_up' : 'leap_down'
 }
 
-const degreeToMidi = (degree: DegreeKey): number => {
-  const scale: Record<DegreeKey, number> = {
-    'Ⅰ': 60,
-    'Ⅱ': 62,
-    'Ⅲ': 64,
-    'Ⅳ': 65,
-    'Ⅴ': 67,
-    'Ⅵ': 69,
-    'Ⅶ': 71,
-  }
-  return scale[degree]
-}
+const midiToFrequency = (midi: number): number =>
+  440 * Math.pow(2, (midi - 69) / 12)
 
 const MusicArchitect = () => {
   const [sequence, setSequence] = useState<Sequence>(createEmptySequence)
@@ -96,6 +99,10 @@ const MusicArchitect = () => {
   )
 
   const rangeLabel = `${currentBar + 1}-${Math.min(currentBar + BARS_PER_PAGE, TOTAL_BARS)}`
+  const hasNotes = useMemo(
+    () => sequence.some((barRow) => barRow.some(Boolean)),
+    [sequence],
+  )
 
   const ensureVisible = (barIndex: number) => {
     const desiredStart = Math.floor(barIndex / BARS_PER_PAGE) * BARS_PER_PAGE
@@ -208,24 +215,26 @@ const MusicArchitect = () => {
         const stepIndex = barIndex * NOTES_PER_BAR + noteIndex
         lastScheduledStep = Math.max(lastScheduledStep, stepIndex)
         const noteStart = startTime + stepIndex * EIGHTH_DURATION
-        const midi = degreeToMidi(cell.degree)
-        const frequency = 440 * Math.pow(2, (midi - 69) / 12)
 
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
+        const chord = DIATONIC_CHORDS[cell.degree]
+        chord.pitches.forEach((midi) => {
+          const frequency = midiToFrequency(midi)
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
 
-        osc.type = 'sine'
-        osc.frequency.value = frequency
+          osc.type = 'sine'
+          osc.frequency.value = frequency
 
-        gain.gain.setValueAtTime(0.001, noteStart)
-        gain.gain.linearRampToValueAtTime(0.2, noteStart + 0.01)
-        gain.gain.exponentialRampToValueAtTime(0.001, noteStart + EIGHTH_DURATION * 0.9)
+          gain.gain.setValueAtTime(0.001, noteStart)
+          gain.gain.linearRampToValueAtTime(0.2, noteStart + 0.01)
+          gain.gain.exponentialRampToValueAtTime(0.001, noteStart + EIGHTH_DURATION * 0.9)
 
-        osc.connect(gain).connect(ctx.destination)
-        osc.start(noteStart)
-        osc.stop(noteStart + EIGHTH_DURATION)
+          osc.connect(gain).connect(ctx.destination)
+          osc.start(noteStart)
+          osc.stop(noteStart + EIGHTH_DURATION)
 
-        activeNodesRef.current.push({ osc, gain })
+          activeNodesRef.current.push({ osc, gain })
+        })
       })
     })
 
@@ -240,6 +249,54 @@ const MusicArchitect = () => {
       cleanupNodes()
       playbackTimeoutRef.current = null
     }, totalDuration)
+  }
+
+  const buildMidiFile = () => {
+    const midiFile = new Midi.File({ ticks: MIDI_TICKS_PER_BEAT })
+    const track = new Midi.Track()
+    midiFile.addTrack(track)
+    track.setTempo(BPM)
+
+    let pendingDelta = 0
+
+    sequence.forEach((barRow) => {
+      barRow.forEach((cell) => {
+        if (!cell) {
+          pendingDelta += EIGHTH_NOTE_TICKS
+          return
+        }
+
+        const chord = DIATONIC_CHORDS[cell.degree]
+        chord.pitches.forEach((midiNumber, index) => {
+          const delta = index === 0 ? pendingDelta : 0
+          track.addNote(0, midiNumber, EIGHTH_NOTE_TICKS, delta)
+        })
+        pendingDelta = 0
+      })
+    })
+
+    return midiFile
+  }
+
+  const handleExportMidi = () => {
+    if (!hasNotes) return
+
+    const midiFile = buildMidiFile()
+    // jsmidgenのtoUint8ArrayはTypedArray.from(string)の仕様変更で全ゼロになるため手動で変換
+    const midiBytesString = midiFile.toBytes()
+    const byteArray = new Uint8Array(midiBytesString.length)
+    for (let i = 0; i < midiBytesString.length; i += 1) {
+      byteArray[i] = midiBytesString.charCodeAt(i)
+    }
+    const blob = new Blob([byteArray], { type: 'audio/midi' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'music-architect.mid'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   const isFirstPage = currentBar === 0
@@ -273,6 +330,15 @@ const MusicArchitect = () => {
           >
             <Square size={18} /> 停止
           </button>
+          <button
+            className="transport-btn"
+            aria-label="save-midi"
+            type="button"
+            onClick={handleExportMidi}
+            disabled={!hasNotes}
+          >
+            <Download size={18} /> MIDI保存
+          </button>
         </div>
       </header>
 
@@ -293,6 +359,7 @@ const MusicArchitect = () => {
                     selectedCell.note === noteIndex
                   const movementColor = cell ? cell.movement : undefined
                   const groupingIndex = Math.floor(noteIndex / 2)
+                  const chordLabel = cell ? DIATONIC_CHORDS[cell.degree].symbol : ''
 
                   return (
                     <button
@@ -303,7 +370,14 @@ const MusicArchitect = () => {
                       }`}
                       onClick={() => handleCellSelect(globalBarIndex, noteIndex)}
                     >
-                      {cell?.degree ?? ''}
+                      {cell ? (
+                        <span className="note-label">
+                          <span className="note-degree">{cell.degree}</span>
+                          <span className="note-chord">{chordLabel}</span>
+                        </span>
+                      ) : (
+                        ''
+                      )}
                     </button>
                   )
                 })}
@@ -360,6 +434,7 @@ const MusicArchitect = () => {
             )
             const movementMeta = MOVEMENT_META_MAP[movementSuggestion]
             const emotionLabel = DEGREE_EMOTIONS[degree][movementSuggestion]
+            const chordMeta = DIATONIC_CHORDS[degree]
 
             return (
               <button
@@ -372,6 +447,7 @@ const MusicArchitect = () => {
                   {movementMeta.label}
                 </span>
                 <span className="degree-symbol">{degree}</span>
+                <span className="chord-name">{chordMeta.symbol} · {chordMeta.notes}</span>
                 <span className="degree-emotion">{emotionLabel}</span>
               </button>
             )
