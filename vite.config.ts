@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react-swc'
 export default defineConfig({
   base: './', // ensure built assets resolve when served from GitHub Pages/docs
   build: {
-    outDir: 'doc',
+    outDir: 'docs',
     emptyOutDir: true,
   },
   plugins: [react()],
